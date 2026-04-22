@@ -39,6 +39,12 @@ def train():
         
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     
+    # Learning Rate Scheduler
+    use_scheduler = config['training'].get('use_scheduler', False)
+    if use_scheduler:
+        min_lr = config['training'].get('min_lr', 1e-5)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=min_lr)
+    
     for epoch in range(epochs):
         model.train()
         total_loss = 0
@@ -76,7 +82,14 @@ def train():
             pbar.set_postfix({'loss': loss.item() * grad_accum_steps})
             
         avg_loss = total_loss / len(dataloader)
-        print(f"Epoch {epoch+1} Average Loss: {avg_loss:.4f}")
+        
+        if use_scheduler:
+            scheduler.step()
+            current_lr = scheduler.get_last_lr()[0]
+        else:
+            current_lr = lr
+            
+        print(f"Epoch {epoch+1} Average Loss: {avg_loss:.4f} | LR: {current_lr:.6f}")
         
         # 1-step Analytical Inference
         if (epoch + 1) % save_every == 0 or epoch == 0:

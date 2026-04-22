@@ -1,7 +1,7 @@
 experiment:
   name: "KART_Flow_MVP"
   output_dir: "outputs"
-  data_dir: "./data"
+  data_dir: "/kaggle/input/datasets/ayush1220/cifar10/cifar10/train"
 
 model:
   img_size: 32

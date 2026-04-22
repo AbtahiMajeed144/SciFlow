@@ -8,7 +8,9 @@ def get_cifar10_dataloader(batch_size=128, root='./data'):
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) # Scale to [-1, 1]
     ])
-    dataset = torchvision.datasets.CIFAR10(root=root, train=True, download=True, transform=transform)
+    
+    # Use ImageFolder for reading raw .png/.jpg images organized in class subfolders
+    dataset = torchvision.datasets.ImageFolder(root=root, transform=transform)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     return dataloader
 

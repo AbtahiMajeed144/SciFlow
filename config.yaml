@@ -1,0 +1,27 @@
+experiment:
+  name: "KART_Flow_MVP"
+  output_dir: "outputs"
+  data_dir: "./data"
+
+model:
+  img_size: 32
+  patch_size: 4
+  in_channels: 3
+  # Scaled up architecture (Similar to DiT-Small)
+  hidden_dim: 384
+  depth: 12
+  heads: 6
+  kart_nodes: 32      # Increased from 2 for much richer local edge features
+  kart_harmonics: 4   # Increased for wider frequency coverage
+
+training:
+  batch_size: 128
+  gradient_accumulation_steps: 1  # Set >1 if the larger batch/model exceeds VRAM
+  epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  save_every: 10
+  multi_gpu: true    # Enable DataParallel if multiple GPUs are available
+
+inference:
+  num_samples: 64

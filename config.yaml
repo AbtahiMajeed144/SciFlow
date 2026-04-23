@@ -18,7 +18,7 @@ training:
   batch_size: 128
   gradient_accumulation_steps: 1  # Set >1 if the larger batch/model exceeds VRAM
   epochs: 50
-  learning_rate: 0.001
+  learning_rate: 0.0001
   weight_decay: 0.0001
   use_scheduler: true
   min_lr: 0.00001

@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from dataset import get_cifar10_dataloader, minibatch_ot_pairing
 from model import KARTFlowModel
-from inference import generate_1step
+from inference import generate_euler
 
 def train():
     # Load Config
@@ -42,8 +42,11 @@ def train():
     # Learning Rate Scheduler
     use_scheduler = config['training'].get('use_scheduler', False)
     if use_scheduler:
-        min_lr = config['training'].get('min_lr', 1e-5)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=min_lr)
+        def lr_lambda(epoch):
+            if epoch < 5:
+                return float(epoch + 1) / 5.0
+            return 1.0
+        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     for epoch in range(epochs):
         model.train()
@@ -64,8 +67,12 @@ def train():
             # 3. Sample random times
             t = torch.rand((B, 1), device=device)
             
-            # 4. Predict Velocity
-            v_pred = model(x0, t)
+            # Calculate intermediate state x_t
+            t_expand = t.view(B, 1, 1, 1)
+            x_t = (1 - t_expand) * x0 + t_expand * x1_paired
+            
+            # 4. Predict Velocity using x_t
+            v_pred = model(x_t, t)
             
             # 5. Loss
             loss = F.mse_loss(v_pred, v_target)
@@ -91,14 +98,14 @@ def train():
             
         print(f"Epoch {epoch+1} Average Loss: {avg_loss:.4f} | LR: {current_lr:.6f}")
         
-        # 1-step Analytical Inference
+        # Euler ODE Solver Inference
         if (epoch + 1) % save_every == 0 or epoch == 0:
             base_model = model.module if isinstance(model, nn.DataParallel) else model
             base_model.eval()
             with torch.no_grad():
                 filename = os.path.join(out_dir, f"epoch_{epoch+1}.png")
                 num_samples = config['inference']['num_samples']
-                generate_1step(base_model, device, num_samples=num_samples, filename=filename)
+                generate_euler(base_model, device, num_samples=num_samples, filename=filename)
 
 if __name__ == '__main__':
     train()

@@ -42,10 +42,18 @@ def train():
     # Learning Rate Scheduler
     use_scheduler = config['training'].get('use_scheduler', False)
     if use_scheduler:
+        import math
+        warmup_epochs = 5
+        min_lr = config['training'].get('min_lr', 1e-5)
+        
         def lr_lambda(epoch):
-            if epoch < 5:
-                return float(epoch + 1) / 5.0
-            return 1.0
+            if epoch < warmup_epochs:
+                return float(epoch + 1) / float(warmup_epochs)
+            progress = float(epoch - warmup_epochs) / float(max(1, epochs - warmup_epochs))
+            cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+            lr_target = min_lr + (lr - min_lr) * cosine_decay
+            return lr_target / lr
+            
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     for epoch in range(epochs):

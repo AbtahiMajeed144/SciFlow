@@ -37,13 +37,24 @@ def train():
         print(f"Let's use {torch.cuda.device_count()} GPUs!")
         model = nn.DataParallel(model)
         
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # Set explicit 0.0 weight decay for KART layer w and B parameters
+    optimizer_grouped_parameters = [
+        {
+            "params": [p for n, p in model.named_parameters() if not (n.endswith('K.w') or n.endswith('K.B'))],
+            "weight_decay": weight_decay,
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if n.endswith('K.w') or n.endswith('K.B')],
+            "weight_decay": 0.0,
+        },
+    ]
+    optimizer = optim.AdamW(optimizer_grouped_parameters, lr=lr)
     
     # Learning Rate Scheduler
     use_scheduler = config['training'].get('use_scheduler', False)
     if use_scheduler:
         import math
-        warmup_epochs = 5
+        warmup_epochs = config['training'].get('warmup_epochs', 5)
         min_lr = config['training'].get('min_lr', 1e-5)
         
         def lr_lambda(epoch):

@@ -6,9 +6,9 @@ import os
 import yaml
 from tqdm import tqdm
 
-from dataset import get_cifar10_dataloader, minibatch_ot_pairing
+from dataset import get_cifar10_dataloader
 from model import KARTFlowModel
-from inference import generate_euler
+from inference import generate_1step
 
 def train():
     # Load Config
@@ -62,27 +62,21 @@ def train():
         optimizer.zero_grad() # Initialize gradients outside the loop
         
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
-        for i, (x1, _) in enumerate(pbar):
+        for i, (x0, x1) in enumerate(pbar):
+            x0 = x0.to(device)
             x1 = x1.to(device)
-            B = x1.size(0)
+            B = x0.size(0)
             
-            # 1. Minibatch OT Pairing
-            x0, x1_paired = minibatch_ot_pairing(x1)
+            # Target Velocity (Static Mapping)
+            v_target = x1 - x0
             
-            # 2. Target Velocity
-            v_target = x1_paired - x0
-            
-            # 3. Sample random times
+            # Sample random times
             t = torch.rand((B, 1), device=device)
             
-            # Calculate intermediate state x_t
-            t_expand = t.view(B, 1, 1, 1)
-            x_t = (1 - t_expand) * x0 + t_expand * x1_paired
+            # Predict Velocity using initial noise x0
+            v_pred = model(x0, t)
             
-            # 4. Predict Velocity using x_t
-            v_pred = model(x_t, t)
-            
-            # 5. Loss
+            # Loss
             loss = F.mse_loss(v_pred, v_target)
             loss = loss / grad_accum_steps # Normalize loss for accumulation
             
@@ -106,14 +100,14 @@ def train():
             
         print(f"Epoch {epoch+1} Average Loss: {avg_loss:.4f} | LR: {current_lr:.6f}")
         
-        # Euler ODE Solver Inference
+        # 1-Step Analytical Inference
         if (epoch + 1) % save_every == 0 or epoch == 0:
             base_model = model.module if isinstance(model, nn.DataParallel) else model
             base_model.eval()
             with torch.no_grad():
                 filename = os.path.join(out_dir, f"epoch_{epoch+1}.png")
                 num_samples = config['inference']['num_samples']
-                generate_euler(base_model, device, num_samples=num_samples, filename=filename)
+                generate_1step(base_model, device, num_samples=num_samples, filename=filename)
 
 if __name__ == '__main__':
     train()

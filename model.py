@@ -4,42 +4,49 @@ import math
 from einops import rearrange
 
 class FourierKARTLayer(nn.Module):
-    def __init__(self, in_features, num_nodes=2, harmonics=2):
+    def __init__(self, in_features, out_features, num_nodes=2, harmonics=2):
         super().__init__()
-        self.D = in_features
+        self.D_in = in_features
+        self.D_out = out_features
         self.Q = num_nodes
         self.K = harmonics
         self.register_buffer('k_vec', torch.arange(1, self.K + 1, dtype=torch.float32))
-        self.W_c = nn.Linear(self.D, self.Q)
+        self.W_c = nn.Linear(self.D_in, self.Q)
         self.w = nn.Parameter(torch.randn(self.Q))
-        self.A = nn.Parameter(torch.randn(self.D, self.Q, self.K) / math.sqrt(self.Q * self.K))
-        self.B = nn.Parameter(torch.rand(self.D, self.Q, self.K) * 2 * math.pi)
+        self.A = nn.Parameter(torch.randn(self.D_out, self.Q, self.K) / math.sqrt(self.Q * self.K))
+        self.B = nn.Parameter(torch.rand(self.D_out, self.Q, self.K) * 2 * math.pi)
 
     def forward(self, X0, t):
         B_dim = X0.shape[0]
         if isinstance(t, float):
             t = torch.full((B_dim, 1), t, device=X0.device, dtype=X0.dtype)
+        elif t.dim() == 1:
+            t = t.unsqueeze(1)
+            
         C = self.W_c(X0)
-        time_term = self.w.unsqueeze(0) * t 
-        angle = C + time_term
-        angle_k = angle.unsqueeze(-1) * self.k_vec.view(1, 1, self.K)
-        inner_term = angle_k.unsqueeze(1) + self.B.unsqueeze(0)
+        time_term = (self.w.unsqueeze(0) * t).unsqueeze(1) 
+        angle = C + time_term 
+        angle_k = angle.unsqueeze(-1) * self.k_vec 
+        inner_term = angle_k.unsqueeze(2) + self.B 
         sin_eval = torch.sin(inner_term)
-        V = torch.sum(self.A.unsqueeze(0) * sin_eval, dim=(2, 3))
+        V = torch.sum(self.A * sin_eval, dim=(3, 4)) 
         return V
 
     def integrate_1step(self, X0):
-        C = self.W_c(X0)
-        angle_k_0 = (C.unsqueeze(-1) * self.k_vec.view(1, 1, self.K)).unsqueeze(1)
-        C_plus_w = C + self.w.unsqueeze(0)
-        angle_k_1 = (C_plus_w.unsqueeze(-1) * self.k_vec.view(1, 1, self.K)).unsqueeze(1)
-        B_unsqueezed = self.B.unsqueeze(0)
-        cos_1 = torch.cos(angle_k_1 + B_unsqueezed)
-        cos_0 = torch.cos(angle_k_0 + B_unsqueezed)
-        denominator = (self.k_vec.view(1, 1, self.K) * self.w.view(1, self.Q, 1)).unsqueeze(1)
+        C = self.W_c(X0) 
+        angle_k_0 = (C.unsqueeze(-1) * self.k_vec).unsqueeze(2) 
+        C_plus_w = C + self.w.view(1, 1, self.Q) 
+        angle_k_1 = (C_plus_w.unsqueeze(-1) * self.k_vec).unsqueeze(2) 
+        
+        cos_1 = torch.cos(angle_k_1 + self.B) 
+        cos_0 = torch.cos(angle_k_0 + self.B) 
+        
+        denominator = (self.w.view(self.Q, 1) * self.k_vec.view(1, self.K)) 
+        denominator = denominator.view(1, 1, 1, self.Q, self.K)
         denominator = torch.where(denominator.abs() < 1e-5, denominator.sign() * 1e-5, denominator)
-        integral_elements = (-self.A.unsqueeze(0) / denominator) * (cos_1 - cos_0)
-        h_1 = torch.sum(integral_elements, dim=(2, 3))
+        
+        integral_elements = (-self.A / denominator) * (cos_1 - cos_0)
+        h_1 = torch.sum(integral_elements, dim=(3, 4))
         return h_1
 
 class DiTBlock(nn.Module):
@@ -75,7 +82,6 @@ class TimeAgnosticTinyDiT(nn.Module):
         ])
         
         self.norm = nn.LayerNorm(hidden_dim)
-        self.head = nn.Linear(hidden_dim, patch_size * patch_size * in_channels)
 
     def forward(self, x0):
         x = self.patch_embed(x0) 
@@ -86,8 +92,6 @@ class TimeAgnosticTinyDiT(nn.Module):
             x = block(x)
             
         x = self.norm(x)
-        x = self.head(x)
-        x = rearrange(x, 'b p c -> b (p c)')
         return x
 
 class KARTFlowModel(nn.Module):
@@ -108,19 +112,26 @@ class KARTFlowModel(nn.Module):
             hidden_dim=hidden_dim, depth=depth, heads=heads
         )
         
-        # D = flattened spatial dimension: e.g. 3 * 32 * 32 = 3072
-        D = in_channels * img_size * img_size
-        self.K = FourierKARTLayer(in_features=D, num_nodes=q, harmonics=k)
+        out_features = patch_size * patch_size * in_channels
+        self.K = FourierKARTLayer(in_features=hidden_dim, out_features=out_features, num_nodes=q, harmonics=k)
         
         self.img_size = img_size
         self.in_channels = in_channels
         
     def forward(self, x0, t):
-        X0 = self.M(x0)
-        V_pred = self.K(X0, t)
-        return rearrange(V_pred, 'b (c h w) -> b c h w', c=self.in_channels, h=self.img_size, w=self.img_size)
+        X_features = self.M(x0)
+        V_patches = self.K(X_features, t)
+        h = w = self.img_size // self.M.patch_size
+        p1 = p2 = self.M.patch_size
+        c = self.in_channels
+        V_pred = rearrange(V_patches, 'b (h w) (p1 p2 c) -> b c (h p1) (w p2)', h=h, w=w, p1=p1, p2=p2, c=c)
+        return V_pred
         
     def integrate_1step(self, x0):
-        X0 = self.M(x0)
-        h_1 = self.K.integrate_1step(X0)
-        return rearrange(h_1, 'b (c h w) -> b c h w', c=self.in_channels, h=self.img_size, w=self.img_size)
+        X_features = self.M(x0)
+        h_1_patches = self.K.integrate_1step(X_features)
+        h = w = self.img_size // self.M.patch_size
+        p1 = p2 = self.M.patch_size
+        c = self.in_channels
+        h_1 = rearrange(h_1_patches, 'b (h w) (p1 p2 c) -> b c (h p1) (w p2)', h=h, w=w, p1=p1, p2=p2, c=c)
+        return h_1

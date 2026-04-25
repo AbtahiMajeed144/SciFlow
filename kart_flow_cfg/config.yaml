@@ -1,0 +1,37 @@
+experiment:
+  name: "KART_Flow_Full_CIFAR10"
+  output_dir: "outputs_full"
+  data_dir: "/kaggle/input/datasets/ayush1220/cifar10/cifar10/train"
+
+model:
+  img_size: 32
+  patch_size: 4
+  in_channels: 3
+  # DiT-Small backbone (Perfect for CIFAR-10)
+  hidden_dim: 384
+  depth: 12
+  heads: 6
+  # Upgraded KART parameters for High-Fidelity Edges
+  kart_nodes: 64      # Increased (Q=64) to provide 64 local oscillators per patch
+  kart_harmonics: 6   # Increased (K=6) to allow sharper, higher-frequency pixel boundaries
+
+training:
+  batch_size: 256     # Maximize this to stabilize gradients across the 50k static paths
+  gradient_accumulation_steps: 1  # (Set to 2 if batch_size=256 causes CUDA Out of Memory on your 2 GPUs)
+  epochs: 400         # CRITICAL: DiTs require massive epoch counts to fine-tune high frequencies
+  learning_rate: 0.0001
+  weight_decay: 0.0001    # (Agent MUST explicitly set w and B in KART layer to 0.0 weight decay)
+  use_scheduler: true
+  scheduler_type: "cosine_with_warmup" 
+  warmup_epochs: 20       # Longer warmup allows the Q=64 phase offsets to safely cluster
+  min_lr: 0.000001
+  save_every: 25          # Save checkpoints less frequently to save disk I/O time
+  multi_gpu: true    
+
+inference:
+  num_samples: 64
+
+cfg:
+  p_uncond: 0.1
+  guidance_scale: 3.0
+  num_classes: 10

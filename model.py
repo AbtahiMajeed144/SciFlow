@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 from einops import rearrange
 
@@ -13,6 +14,7 @@ class FourierKARTLayer(nn.Module):
         self.register_buffer('k_vec', torch.arange(1, self.K + 1, dtype=torch.float32))
         self.W_c = nn.Linear(self.D_in, self.Q)
         self.w = nn.Parameter(torch.randn(self.Q))
+        self.gamma = nn.Parameter(torch.zeros(self.Q))
         self.A = nn.Parameter(torch.randn(self.D_out, self.Q, self.K) / math.sqrt(self.Q * self.K))
         self.B = nn.Parameter(torch.rand(self.D_out, self.Q, self.K) * 2 * math.pi)
 
@@ -29,7 +31,12 @@ class FourierKARTLayer(nn.Module):
         angle_k = angle.unsqueeze(-1) * self.k_vec 
         inner_term = angle_k.unsqueeze(2) + self.B 
         sin_eval = torch.sin(inner_term)
-        V = torch.sum(self.A * sin_eval, dim=(3, 4)) 
+        
+        friction = F.softplus(self.gamma)
+        friction_t = (friction.unsqueeze(0) * t).unsqueeze(1)
+        damping = torch.exp(-friction_t).unsqueeze(2).unsqueeze(-1)
+        
+        V = torch.sum((self.A * damping) * sin_eval, dim=(3, 4)) 
         return V
 
     def integrate_1step(self, X0):
@@ -38,14 +45,18 @@ class FourierKARTLayer(nn.Module):
         C_plus_w = C + self.w.view(1, 1, self.Q) 
         angle_k_1 = (C_plus_w.unsqueeze(-1) * self.k_vec).unsqueeze(2) 
         
-        cos_1 = torch.cos(angle_k_1 + self.B) 
-        cos_0 = torch.cos(angle_k_0 + self.B) 
+        theta = angle_k_0 + self.B
+        omega_plus_theta = angle_k_1 + self.B
         
-        denominator = (self.w.view(self.Q, 1) * self.k_vec.view(1, self.K)) 
-        denominator = denominator.view(1, 1, 1, self.Q, self.K)
-        denominator = torch.where(denominator.abs() < 1e-5, denominator.sign() * 1e-5, denominator)
+        a = F.softplus(self.gamma).view(1, 1, 1, self.Q, 1)
+        omega = (self.w.view(self.Q, 1) * self.k_vec.view(1, self.K)).view(1, 1, 1, self.Q, self.K)
         
-        integral_elements = (-self.A / denominator) * (cos_1 - cos_0)
+        D = a**2 + omega**2 + 1e-5
+        
+        term_1 = (torch.exp(-a) / D) * (-a * torch.sin(omega_plus_theta) - omega * torch.cos(omega_plus_theta))
+        term_0 = (1.0 / D) * (-a * torch.sin(theta) - omega * torch.cos(theta))
+        
+        integral_elements = self.A * (term_1 - term_0)
         h_1 = torch.sum(integral_elements, dim=(3, 4))
         return h_1
 

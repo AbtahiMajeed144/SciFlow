@@ -37,14 +37,14 @@ def train():
         print(f"Let's use {torch.cuda.device_count()} GPUs!")
         model = nn.DataParallel(model)
         
-    # Set explicit 0.0 weight decay for KART layer w and B parameters
+    # Set explicit 0.0 weight decay for KART layer w, B, and gamma parameters
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not (n.endswith('K.w') or n.endswith('K.B'))],
+            "params": [p for n, p in model.named_parameters() if not (n.endswith('K.w') or n.endswith('K.B') or n.endswith('K.gamma'))],
             "weight_decay": weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if n.endswith('K.w') or n.endswith('K.B')],
+            "params": [p for n, p in model.named_parameters() if n.endswith('K.w') or n.endswith('K.B') or n.endswith('K.gamma')],
             "weight_decay": 0.0,
         },
     ]

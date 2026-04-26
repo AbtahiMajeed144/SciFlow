@@ -1,0 +1,15 @@
+experiment:
+  name: "KART_Flow_Full_CIFAR10"
+  output_dir: "outputs_full"
+  data_dir: "/kaggle/input/datasets/ayush1220/cifar10/cifar10/train"
+  dataset_type: "cifar10"
+
+model:
+  img_size: 32
+  in_channels: 3
+
+cfg:
+  num_classes: 10
+
+data_prep:
+  noise_multiplier: 1

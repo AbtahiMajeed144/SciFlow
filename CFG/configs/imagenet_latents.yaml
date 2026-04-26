@@ -1,0 +1,15 @@
+experiment:
+  name: "KART_Flow_Full_ImageNet_Latents"
+  output_dir: "outputs_imagenet"
+  data_dir: "imagenet_latents/train"
+  dataset_type: "imagenet_latents"
+
+model:
+  img_size: 32
+  in_channels: 4
+
+cfg:
+  num_classes: 1000
+
+data_prep:
+  noise_multiplier: 4

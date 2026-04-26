@@ -6,3 +6,4 @@ references/rcm/*
 references/Re-MeanFlow/*
 ablations.md
 roadmap.md
+__pycache__/

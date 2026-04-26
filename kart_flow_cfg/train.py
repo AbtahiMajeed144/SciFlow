@@ -12,7 +12,7 @@ from inference import generate_1step
 
 def train():
     # Load Config
-    with open('config.yaml', 'r') as f:
+    with open('kart_flow_cfg/config.yaml', 'r') as f:
         config = yaml.safe_load(f)
         
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

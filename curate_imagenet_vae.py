@@ -118,7 +118,24 @@ def main():
 
     # ── 3. Start the Producer Thread ──────────────────────────────────────────
     print(f"Streaming ImageNet-1K split='{args.split}' in the background...")
+    
+    # Try argument, then environment variable
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+    
+    # If still not found, check Kaggle Secrets natively
+    if not hf_token:
+        try:
+            from kaggle_secrets import UserSecretsClient
+            hf_token = UserSecretsClient().get_secret("HF_TOKEN")
+        except Exception:
+            pass
+    
+    if not hf_token:
+        print("\n[ERROR] Hugging Face token is missing!")
+        print("Because ImageNet-1k is a gated dataset, you MUST provide a token.")
+        print("Usage: python curate_imagenet_vae.py ... --hf_token hf_YOUR_TOKEN")
+        return
+        
     ds = load_dataset("ILSVRC/imagenet-1k", split=args.split, streaming=True, token=hf_token)
     
     # We use a Queue to pass batches between the download thread and the GPU thread.

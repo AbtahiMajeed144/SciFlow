@@ -31,6 +31,7 @@ import torch
 import threading
 import queue
 import time
+from tqdm import tqdm
 from torchvision import transforms
 from datasets import load_dataset
 from diffusers import AutoencoderKL
@@ -86,6 +87,8 @@ def main():
                         help="Optional cap on total latents (useful for quick tests)")
     parser.add_argument("--queue_size", type=int, default=5,
                         help="Number of pre-fetched batches to hold in RAM")
+    parser.add_argument("--hf_token", type=str, default=None,
+                        help="Hugging Face API token for gated datasets")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -115,7 +118,8 @@ def main():
 
     # ── 3. Start the Producer Thread ──────────────────────────────────────────
     print(f"Streaming ImageNet-1K split='{args.split}' in the background...")
-    ds = load_dataset("ILSVRC/imagenet-1k", split=args.split, streaming=True)
+    hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+    ds = load_dataset("ILSVRC/imagenet-1k", split=args.split, streaming=True, token=hf_token)
     
     # We use a Queue to pass batches between the download thread and the GPU thread.
     # Limiting maxsize prevents RAM OOM if the internet is faster than the GPU.
@@ -131,6 +135,10 @@ def main():
     counters = {}
     saved_count = 0
     start_time = time.time()
+    
+    # ImageNet train has 1,281,167 images. Validation has 50,000.
+    total_images = args.max_samples if args.max_samples else (1281167 if args.split == "train" else 50000)
+    pbar = tqdm(total=total_images, desc="Compressing Latents", unit="img")
 
     def process_and_save_batch(images, labels):
         nonlocal saved_count
@@ -164,9 +172,9 @@ def main():
             np.save(filepath, latent)
             
             saved_count += 1
-            if saved_count % 5000 == 0:
-                elapsed = time.time() - start_time
-                print(f"  ... processed and saved {saved_count} latents ({len(counters)} classes seen, {elapsed:.1f}s)")
+            
+        pbar.update(len(images))
+        pbar.set_postfix({"Classes": len(counters)})
 
     # ── 4. Main Iteration Loop (Consumer) ─────────────────────────────────────
     print("GPU consumer is waiting for the first batch...")
@@ -185,6 +193,7 @@ def main():
         
         data_queue.task_done()
 
+    pbar.close()
     producer.join()
 
     total_time = time.time() - start_time

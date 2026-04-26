@@ -107,6 +107,21 @@ def main():
     # Freeze VAE gradients
     for param in vae.parameters():
         param.requires_grad = False
+        
+    class ParallelVAEEncoder(torch.nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+            
+        def forward(self, x):
+            return self.model.encode(x).latent_dist.sample()
+
+    # Enable Multi-GPU via DataParallel
+    if torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs via DataParallel!")
+        encoder_model = torch.nn.DataParallel(ParallelVAEEncoder(vae))
+    else:
+        encoder_model = ParallelVAEEncoder(vae)
 
     # ── 2. Data Transform Pipeline ────────────────────────────────────────────
     # Resize to 256x256, convert to tensor, and normalize to [-1, 1]
@@ -169,9 +184,9 @@ def main():
             
         batch_tensor = torch.stack(tensors).to(device, dtype=weight_dtype)
         
-        # Encode with VAE
+        # Encode with VAE (DataParallel handles the chunking across GPUs automatically)
         with torch.no_grad():
-            latents = vae.encode(batch_tensor).latent_dist.sample()
+            latents = encoder_model(batch_tensor)
             # CRITICAL: Apply the exact scaling factor 0.18215
             latents = latents * 0.18215
             

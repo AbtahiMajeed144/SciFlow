@@ -7,8 +7,8 @@ model:
   kart_harmonics: 6
 
 training:
-  batch_size: 256
-  gradient_accumulation_steps: 2
+  batch_size: 4
+  gradient_accumulation_steps: 1
   epochs: 400
   learning_rate: 0.0001
   weight_decay: 0.0001

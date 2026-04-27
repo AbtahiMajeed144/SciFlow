@@ -48,6 +48,16 @@ def train():
     dataloader = get_dataloader(batch_size=batch_size, data_dir=out_dir)
     model = KARTFlowModel(config).to(device)
     
+    if config.get('model', {}).get('print_model_stats', False):
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print("="*30)
+        print("Model Statistics:")
+        print(f"Total Parameters: {total_params:,}")
+        print(f"Trainable Parameters: {trainable_params:,}")
+        print("="*30)
+        
+
     # Multi-GPU Support via DataParallel
     if config['training']['multi_gpu'] and torch.cuda.device_count() > 1:
         print(f"Let's use {torch.cuda.device_count()} GPUs!")

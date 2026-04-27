@@ -5,9 +5,10 @@ model:
   model_size: "small"
   kart_nodes: 128
   kart_harmonics: 6
+  print_model_stats: true
 
 training:
-  batch_size: 256
+  batch_size: 64
   gradient_accumulation_steps: 4
   epochs: 400
   learning_rate: 0.0001

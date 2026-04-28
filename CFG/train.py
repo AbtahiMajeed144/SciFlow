@@ -17,6 +17,8 @@ def train():
     parser = argparse.ArgumentParser(description="Train KART-Flow model.")
     parser.add_argument("--config", type=str, required=True, help="Path to dataset-specific config")
     parser.add_argument("--global_config", type=str, default="configs/global.yaml", help="Path to global config")
+    parser.add_argument("--resume", type=str, default=None, help="Path to a full training checkpoint (.pt) to resume from")
+    parser.add_argument("--resume_epoch", type=int, default=None, help="Epoch number the checkpoint was saved at (training resumes from epoch+1)")
     args = parser.parse_args()
     
     config = load_config(args.global_config, args.config)
@@ -63,14 +65,14 @@ def train():
         print(f"Let's use {torch.cuda.device_count()} GPUs!")
         model = nn.DataParallel(model)
         
-    # Set explicit 0.0 weight decay for physics parameters (frequency and friction)
+    # Set explicit 0.0 weight decay for physics parameters (frequency)
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not (n.endswith('K.w') or n.endswith('K.gamma'))],
+            "params": [p for n, p in model.named_parameters() if not n.endswith('K.w')],
             "weight_decay": weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if n.endswith('K.w') or n.endswith('K.gamma')],
+            "params": [p for n, p in model.named_parameters() if n.endswith('K.w')],
             "weight_decay": 0.0,
         },
     ]
@@ -96,12 +98,41 @@ def train():
             
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
+    # ---- Resume from checkpoint ----
+    start_epoch = 0
+    if args.resume is not None:
+        if args.resume_epoch is None:
+            parser.error("--resume_epoch is required when --resume is specified.")
+        if not os.path.isfile(args.resume):
+            raise FileNotFoundError(f"Checkpoint not found: {args.resume}")
+        
+        print(f"Resuming from checkpoint: {args.resume} (epoch {args.resume_epoch})")
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        
+        # Load model weights
+        base_model.load_state_dict(ckpt['model_state_dict'])
+        
+        # Load optimizer state (restores momentum buffers, etc.)
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        
+        # Load scheduler state to get the exact LR curve position
+        if use_scheduler and 'scheduler_state_dict' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        
+        # Load EMA shadow weights
+        if 'ema_state_dict' in ckpt:
+            ema.load_state_dict(ckpt['ema_state_dict'])
+        
+        start_epoch = args.resume_epoch
+        print(f"Resuming training from epoch {start_epoch + 1} | LR: {optimizer.param_groups[0]['lr']:.6f}")
+        del ckpt  # free memory
+    
     # Read CFG params once outside the loop (avoid repeated dict lookups)
     p_uncond = config.get('cfg', {}).get('p_uncond', 0.1)
     num_classes = config.get('cfg', {}).get('num_classes', 10)
     guidance_scale = config.get('cfg', {}).get('guidance_scale', 3.0)
     
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         model.train()
         epoch_loss = 0.0
         epoch_loss_vel = 0.0
@@ -187,12 +218,25 @@ def train():
                 generate_1step(base_model, device, num_samples=num_samples, filename=filename, 
                                labels=eval_labels, guidance_scale=guidance_scale, num_classes=num_classes)
                 
-                # Save EMA checkpoint
-                ckpt_path = os.path.join(out_dir, f"ema_model_epoch_{epoch+1}.pt")
-                torch.save(base_model.state_dict(), ckpt_path)
+                # Save EMA-only checkpoint (for standalone inference)
+                ema_ckpt_path = os.path.join(out_dir, f"ema_model_epoch_{epoch+1}.pt")
+                torch.save(base_model.state_dict(), ema_ckpt_path)
                 
             base_model.train()
             ema.restore(base_model)
+            
+            # Save full training checkpoint AFTER restoring training weights
+            # (EMA shadow is preserved separately via ema.state_dict())
+            full_ckpt = {
+                'epoch': epoch + 1,
+                'model_state_dict': base_model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'ema_state_dict': ema.state_dict(),
+            }
+            if use_scheduler:
+                full_ckpt['scheduler_state_dict'] = scheduler.state_dict()
+            full_ckpt_path = os.path.join(out_dir, f"training_checkpoint_epoch_{epoch+1}.ckpt")
+            torch.save(full_ckpt, full_ckpt_path)
             
         # Periodic Rigorous Evaluation
         if (epoch + 1) % eval_every == 0:

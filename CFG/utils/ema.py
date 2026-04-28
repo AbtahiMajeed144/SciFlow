@@ -43,3 +43,15 @@ class EMA:
                 if param.requires_grad and name in self.backup:
                     param.data.copy_(self.backup[name])
         self.backup = {}
+
+    def state_dict(self):
+        """Return serializable state for checkpointing."""
+        return {
+            'beta': self.beta,
+            'shadow': {k: v.clone() for k, v in self.shadow.items()},
+        }
+
+    def load_state_dict(self, state):
+        """Restore EMA state from a checkpoint."""
+        self.beta = state['beta']
+        self.shadow = {k: v.clone() for k, v in state['shadow'].items()}

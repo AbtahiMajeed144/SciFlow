@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from data import get_dataloader
 from models import KARTFlowModel
-from utils import EMA, generate_1step, get_vae, load_config
+from utils import EMA, generate_1step, get_vae, load_config, pair_samples
 from evaluate import evaluate_model
 
 
@@ -131,6 +131,7 @@ def train():
     p_uncond = config.get('cfg', {}).get('p_uncond', 0.1)
     num_classes = config.get('cfg', {}).get('num_classes', 10)
     guidance_scale = config.get('cfg', {}).get('guidance_scale', 3.0)
+    pairing_strategy = config.get('training', {}).get('pairing_strategy', 'sliced_sorting')
     
     for epoch in range(start_epoch, epochs):
         model.train()
@@ -140,59 +141,101 @@ def train():
         optimizer.zero_grad()
         
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
-        for i, (x0, x1, labels) in enumerate(pbar):
-            x0 = x0.to(device)
-            x1 = x1.to(device)
-            labels = labels.to(device)
-            B = x0.size(0)
+        
+        # Buffers to construct the global batch
+        accum_x0, accum_x1, accum_labels = [], [], []
+        
+        for i, (x0_local, x1_local, labels_local) in enumerate(pbar):
+            # Accumulate on CPU to save VRAM
+            accum_x0.append(x0_local)
+            accum_x1.append(x1_local)
+            accum_labels.append(labels_local)
             
-            # Target Velocity (Static Mapping)
-            v_target = x1 - x0
-            
-            # Sample random times
-            t = torch.rand((B, 1), device=device)
-            
-            # CFG Label Dropout (p_uncond of the time, replace label with null_class)
-            if p_uncond > 0.0:
-                drop_mask = torch.rand(B, device=device) < p_uncond
-                labels = torch.where(drop_mask, torch.full_like(labels, num_classes), labels)
-            
-            # Predict Velocity and Endpoint Displacement concurrently
-            v_pred, delta_x = model(x0, t, labels, return_delta_x=True)
-            
-            # Term 1: Instantaneous Velocity Loss
-            loss_vel = F.mse_loss(v_pred, v_target)
-            
-            # Term 2: Analytical Endpoint Loss (integral from 0 to t)
-            t_spatial = t.view(B, 1, 1, 1)                   # broadcast over [C, H, W]
-            x_target = (1 - t_spatial) * x0 + t_spatial * x1  # linear interpolant at time t
-            x_pred = x0 + delta_x
-            loss_end = F.mse_loss(x_pred, x_target)
-            
-            # Total Objective
-            total_loss = loss_vel + (endpoint_weight * loss_end)
-            
-            loss = total_loss / grad_accum_steps  # Normalize loss for accumulation
-            
-            loss.backward()
-            
-            if ((i + 1) % grad_accum_steps == 0) or (i + 1 == len(dataloader)):
-                optimizer.step()
-                optimizer.zero_grad()
+            is_step = ((i + 1) % grad_accum_steps == 0) or (i + 1 == len(dataloader))
+            if not is_step:
+                continue
                 
-                # Silently update EMA weights in the background
-                ema.update(base_model)
+            # --- GLOBAL BATCH PAIRING ---
+            global_x0 = torch.cat(accum_x0, dim=0).to(device)
+            global_x1 = torch.cat(accum_x1, dim=0).to(device)
+            global_labels = torch.cat(accum_labels, dim=0).to(device)
             
-            total_loss_val = total_loss.item()
-            epoch_loss += total_loss_val
-            epoch_loss_vel += loss_vel.item()
-            epoch_loss_end += loss_end.item()
+            global_x0, global_x1 = pair_samples(global_x0, global_x1, strategy=pairing_strategy)
+            
+            # --- SPLIT BACK TO LOCAL BATCHES FOR GRADIENT ACCUMULATION ---
+            local_batch_sizes = [x.size(0) for x in accum_x0]
+            x0_chunks = torch.split(global_x0, local_batch_sizes)
+            x1_chunks = torch.split(global_x1, local_batch_sizes)
+            labels_chunks = torch.split(global_labels, local_batch_sizes)
+            
+            step_loss = 0.0
+            step_loss_vel = 0.0
+            step_loss_end = 0.0
+            num_chunks = len(x0_chunks)
+            
+            for j in range(num_chunks):
+                x0 = x0_chunks[j]
+                x1 = x1_chunks[j]
+                labels = labels_chunks[j]
+                B = x0.size(0)
+                
+                # Target Velocity (Static Mapping)
+                v_target = x1 - x0
+                
+                # Sample random times
+                t = torch.rand((B, 1), device=device)
+                
+                # CFG Label Dropout
+                if p_uncond > 0.0:
+                    drop_mask = torch.rand(B, device=device) < p_uncond
+                    labels = torch.where(drop_mask, torch.full_like(labels, num_classes), labels)
+                
+                # Predict Velocity and Endpoint Displacement concurrently
+                v_pred, delta_x = model(x0, t, labels, return_delta_x=True)
+                
+                # Term 1: Instantaneous Velocity Loss
+                loss_vel = F.mse_loss(v_pred, v_target)
+                
+                # Term 2: Analytical Endpoint Loss (integral from 0 to t)
+                t_spatial = t.view(B, 1, 1, 1)
+                x_target = (1 - t_spatial) * x0 + t_spatial * x1
+                x_pred = x0 + delta_x
+                loss_end = F.mse_loss(x_pred, x_target)
+                
+                # Total Objective
+                total_loss = loss_vel + (endpoint_weight * loss_end)
+                
+                # Normalize loss for accumulation across chunks
+                loss = total_loss / num_chunks
+                loss.backward()
+                
+                step_loss += total_loss.item()
+                step_loss_vel += loss_vel.item()
+                step_loss_end += loss_end.item()
+                
+            # --- GRADIENT STEP ---
+            optimizer.step()
+            optimizer.zero_grad()
+            ema.update(base_model)
+            
+            # Average chunk losses for logging
+            avg_step_loss = step_loss / num_chunks
+            avg_step_loss_vel = step_loss_vel / num_chunks
+            avg_step_loss_end = step_loss_end / num_chunks
+            
+            # Add to epoch totals (scaling back up by num_chunks matches previous len(dataloader) average math)
+            epoch_loss += step_loss
+            epoch_loss_vel += step_loss_vel
+            epoch_loss_end += step_loss_end
             
             pbar.set_postfix({
-                'L_vel': loss_vel.item(), 
-                'L_end': loss_end.item(), 
-                'Total': total_loss_val
+                'L_vel': avg_step_loss_vel, 
+                'L_end': avg_step_loss_end, 
+                'Total': avg_step_loss
             })
+            
+            # Reset accumulation buffers
+            accum_x0, accum_x1, accum_labels = [], [], []
             
         avg_loss = epoch_loss / len(dataloader)
         avg_loss_vel = epoch_loss_vel / len(dataloader)

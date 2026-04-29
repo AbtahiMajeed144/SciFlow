@@ -163,9 +163,11 @@ def train():
             # Term 1: Instantaneous Velocity Loss
             loss_vel = F.mse_loss(v_pred, v_target)
             
-            # Term 2: Analytical Endpoint Loss
+            # Term 2: Analytical Endpoint Loss (integral from 0 to t)
+            t_spatial = t.view(B, 1, 1, 1)                   # broadcast over [C, H, W]
+            x_target = (1 - t_spatial) * x0 + t_spatial * x1  # linear interpolant at time t
             x_pred = x0 + delta_x
-            loss_end = F.mse_loss(x_pred, x1)
+            loss_end = F.mse_loss(x_pred, x_target)
             
             # Total Objective
             total_loss = loss_vel + (endpoint_weight * loss_end)

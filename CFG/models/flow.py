@@ -53,8 +53,8 @@ class KARTFlowModel(nn.Module):
         V_pred = self._unpack_patches(V_patches)
         
         if return_delta_x:
-            h_1_patches = self.K.integrate_1step(X_features)
-            delta_x = self._unpack_patches(h_1_patches)
+            h_t_patches = self.K.integrate_to_t(X_features, t)
+            delta_x = self._unpack_patches(h_t_patches)
             return V_pred, delta_x
             
         return V_pred

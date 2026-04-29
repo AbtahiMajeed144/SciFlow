@@ -19,12 +19,12 @@ training:
   min_lr: 0.000001
   save_every: 25
   multi_gpu: true    
-  endpoint_weight: 0.1
+  endpoint_weight: 1.0
   ema_decay: 0.9999
   eval_every: 50
   eval_samples: 10000
   eval_batch_size: 128
-  ref_stat_path: "validation"
+  ref_stat_path: "/kaggle/working/validation"
 
 inference:
   num_samples: 64

@@ -160,7 +160,8 @@ def train():
             global_x1 = torch.cat(accum_x1, dim=0).to(device)
             global_labels = torch.cat(accum_labels, dim=0).to(device)
             
-            global_x0, global_x1 = pair_samples(global_x0, global_x1, strategy=pairing_strategy)
+            global_x0, global_x1, perm = pair_samples(global_x0, global_x1, strategy=pairing_strategy)
+            global_labels = global_labels[perm]
             
             # --- SPLIT BACK TO LOCAL BATCHES FOR GRADIENT ACCUMULATION ---
             local_batch_sizes = [x.size(0) for x in accum_x0]

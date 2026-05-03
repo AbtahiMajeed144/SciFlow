@@ -4,13 +4,14 @@ import torch.nn.functional as F
 import torch.optim as optim
 import os
 import yaml
+import argparse
 from tqdm import tqdm
 
 from dataset import get_cifar10_dataloader
 from model import KARTFlowModel
 from inference import generate_1step
 
-def train():
+def train(args):
     # Load Config
     with open('kart_flow_cfg/config.yaml', 'r') as f:
         config = yaml.safe_load(f)
@@ -67,7 +68,22 @@ def train():
             
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
-    for epoch in range(epochs):
+    start_epoch = 0
+    if args.ckpt_path and os.path.isfile(args.ckpt_path):
+        print(f"Resuming training from checkpoint: {args.ckpt_path}")
+        checkpoint = torch.load(args.ckpt_path, map_location=device)
+        
+        base_model = model.module if isinstance(model, nn.DataParallel) else model
+        base_model.load_state_dict(checkpoint['model_state_dict'])
+        
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if use_scheduler and checkpoint.get('scheduler_state_dict'):
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
+        start_epoch = checkpoint.get('epoch', 0)
+        print(f"Resumed at epoch {start_epoch}")
+
+    for epoch in range(start_epoch, epochs):
         model.train()
         total_loss = 0
         optimizer.zero_grad() # Initialize gradients outside the loop
@@ -131,5 +147,21 @@ def train():
                 generate_1step(base_model, device, num_samples=num_samples, filename=filename, 
                                labels=eval_labels, guidance_scale=guidance_scale, num_classes=num_classes)
 
+            # Save checkpoint with metadata
+            if (epoch + 1) % save_every == 0:
+                checkpoint_path = os.path.join(out_dir, f"checkpoint_epoch_{epoch+1}.ckpt")
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': base_model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict() if use_scheduler else None,
+                    'learning_rate': current_lr,
+                    'config': config
+                }, checkpoint_path)
+                print(f"Saved checkpoint to {checkpoint_path}")
+
 if __name__ == '__main__':
-    train()
+    parser = argparse.ArgumentParser(description="Train KART Flow Model")
+    parser.add_argument('--ckpt_path', type=str, default=None, help="Path to checkpoint to resume training from")
+    args = parser.parse_args()
+    train(args)

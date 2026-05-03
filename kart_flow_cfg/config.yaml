@@ -12,7 +12,7 @@ model:
   depth: 12
   heads: 6
   # Upgraded KART parameters for High-Fidelity Edges
-  kart_nodes: 64      # Increased (Q=64) to provide 64 local oscillators per patch
+  kart_nodes: 128      # Increased (Q=64) to provide 64 local oscillators per patch
   kart_harmonics: 6   # Increased (K=6) to allow sharper, higher-frequency pixel boundaries
 
 training:

@@ -4,3 +4,4 @@ data/*
 references/FourierKAN/*
 references/rcm/*
 references/Re-MeanFlow/*
+*.pyc

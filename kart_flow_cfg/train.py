@@ -5,11 +5,57 @@ import torch.optim as optim
 import os
 import yaml
 import argparse
+import numpy as np
 from tqdm import tqdm
 
 from dataset import get_cifar10_dataloader
 from model import KARTFlowModel
 from inference import generate_1step
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Adaptive L2 Loss (from MeanFlow, adapted for KART Flow)
+# ──────────────────────────────────────────────────────────────────────────────
+def adaptive_l2_loss(error, gamma=0.5, c=1e-3):
+    """Adaptive L2 loss: sg(w) * ||Δ||² where w = 1 / (||Δ||² + c)^(1-γ).
+    
+    Downweights easy-to-predict smooth regions so that high-frequency
+    details (edges, textures) receive proportionally more gradient signal.
+    
+    Args:
+        error: (B, C, H, W) tensor of prediction errors (v_pred - v_target)
+        gamma: Power parameter. 0.5 → effective loss ∝ ||Δ||¹ (balances L1/L2)
+        c: Small constant for numerical stability
+    Returns:
+        Scalar loss
+    """
+    delta_sq = torch.mean(error ** 2, dim=(1, 2, 3))  # (B,)
+    p = 1.0 - gamma
+    w = 1.0 / (delta_sq + c).pow(p)                    # (B,)
+    return (w.detach() * delta_sq).mean()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Logit-Normal Time Sampling
+# ──────────────────────────────────────────────────────────────────────────────
+def sample_logit_normal_t(batch_size, mu=-0.4, sigma=1.0, device='cpu'):
+    """Sample timesteps from a logit-normal distribution.
+    
+    Concentrates samples in the mid-range of [0,1] where the velocity field
+    is hardest to learn, avoiding wasted compute on trivial t≈0 and t≈1 regions.
+    
+    Args:
+        batch_size: number of samples
+        mu: mean of the underlying normal (negative → slight bias toward t=0, data side)
+        sigma: std of the underlying normal
+        device: target device
+    Returns:
+        t: (B, 1) tensor of timesteps in (0, 1)
+    """
+    normal_samples = np.random.randn(batch_size).astype(np.float32) * sigma + mu
+    t_np = 1.0 / (1.0 + np.exp(-normal_samples))  # Sigmoid → (0, 1)
+    t = torch.tensor(t_np, device=device).unsqueeze(1)  # (B, 1)
+    return t
 
 def train(args):
     # Load Config
@@ -89,11 +135,13 @@ def train(args):
         optimizer.zero_grad() # Initialize gradients outside the loop
         
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
-        for i, (x0, x1, labels) in enumerate(pbar):
-            x0 = x0.to(device)
+        for i, (x1, labels) in enumerate(pbar):
             x1 = x1.to(device)
             labels = labels.to(device)
-            B = x0.size(0)
+            B = x1.size(0)
+            
+            # Dynamic noise: fresh Gaussian noise every iteration
+            x0 = torch.randn_like(x1)
             
             # CFG Dropout
             p_uncond = config.get('cfg', {}).get('p_uncond', 0.1)
@@ -101,18 +149,19 @@ def train(args):
             drop_mask = torch.rand(B, device=device) < p_uncond
             labels[drop_mask] = num_classes
             
-            # Target Velocity (Static Mapping)
+            # Target Velocity (Dynamic Pairing)
             v_target = x1 - x0
             
-            # Sample random times
-            t = torch.rand((B, 1), device=device)
+            # Logit-normal time sampling (concentrates on hard timesteps)
+            t = sample_logit_normal_t(B, mu=-0.4, sigma=1.0, device=device)
             
             # Predict Velocity using initial noise x0 and labels
             v_pred = model(x0, t, labels)
             
-            # Loss
-            loss = F.mse_loss(v_pred, v_target)
-            loss = loss / grad_accum_steps # Normalize loss for accumulation
+            # Adaptive L2 Loss (downweights easy regions, emphasizes high-freq details)
+            error = v_pred - v_target
+            loss = adaptive_l2_loss(error)
+            loss = loss / grad_accum_steps  # Normalize loss for accumulation
             
             loss.backward()
             

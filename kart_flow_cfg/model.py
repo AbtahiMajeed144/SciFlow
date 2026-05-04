@@ -1,7 +1,37 @@
 import torch
 import torch.nn as nn
 import math
+import numpy as np
 from einops import rearrange
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sin-Cos Positional Embedding (from DiT / MAE)
+# ──────────────────────────────────────────────────────────────────────────────
+def get_2d_sincos_pos_embed(embed_dim, grid_size):
+    """Generate 2D sin-cos positional embedding.
+    Args:
+        embed_dim: embedding dimension
+        grid_size: int, height and width of the grid
+    Returns:
+        pos_embed: [grid_size*grid_size, embed_dim]
+    """
+    grid_h = np.arange(grid_size, dtype=np.float32)
+    grid_w = np.arange(grid_size, dtype=np.float32)
+    grid = np.meshgrid(grid_w, grid_h)
+    grid = np.stack(grid, axis=0).reshape([2, 1, grid_size, grid_size])
+
+    emb_h = _get_1d_sincos_pos_embed(embed_dim // 2, grid[0].reshape(-1))
+    emb_w = _get_1d_sincos_pos_embed(embed_dim // 2, grid[1].reshape(-1))
+    return np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
+
+
+def _get_1d_sincos_pos_embed(embed_dim, pos):
+    omega = np.arange(embed_dim // 2, dtype=np.float64)
+    omega /= embed_dim / 2.0
+    omega = 1.0 / 10000**omega  # (D/2,)
+    out = np.einsum('m,d->md', pos, omega)  # (M, D/2)
+    return np.concatenate([np.sin(out), np.cos(out)], axis=1)  # (M, D)
 
 class FourierKARTLayer(nn.Module):
     def __init__(self, in_features, out_features, num_nodes=2, harmonics=2):
@@ -71,10 +101,7 @@ class DiTBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_dim, 6 * hidden_dim, bias=True)
         )
-        
-        # Zero-initialize adaLN modulation to act as an identity mapping at start
-        nn.init.zeros_(self.adaLN_modulation[1].weight)
-        nn.init.zeros_(self.adaLN_modulation[1].bias)
+        # Note: adaLN zero-init is handled centrally in initialize_weights()
 
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
@@ -94,7 +121,8 @@ class TimeAgnosticTinyDiT(nn.Module):
         self.num_patches = (img_size // patch_size) ** 2
         
         self.patch_embed = nn.Conv2d(in_channels, hidden_dim, kernel_size=patch_size, stride=patch_size)
-        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches, hidden_dim) * 0.02)
+        # Learnable parameter, initialized with sin-cos values in initialize_weights()
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, hidden_dim))
         
         self.class_emb = nn.Embedding(num_classes + 1, hidden_dim)
         
@@ -103,6 +131,36 @@ class TimeAgnosticTinyDiT(nn.Module):
         ])
         
         self.norm = nn.LayerNorm(hidden_dim)
+        
+        # Apply DiT initialization protocol
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        # 1. Xavier uniform for all Linear layers, zero bias
+        def _basic_init(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        self.apply(_basic_init)
+        
+        # 2. Sin-cos positional embedding
+        grid_size = int(self.num_patches ** 0.5)
+        pos_embed_np = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], grid_size)
+        self.pos_embed.data.copy_(torch.from_numpy(pos_embed_np).float().unsqueeze(0))
+        
+        # 3. Patch embed Conv2d: Xavier uniform (treat as Linear)
+        w = self.patch_embed.weight.data
+        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        nn.init.constant_(self.patch_embed.bias, 0)
+        
+        # 4. Class embedding: normal(std=0.02)
+        nn.init.normal_(self.class_emb.weight, std=0.02)
+        
+        # 5. Zero-init all adaLN modulation outputs (identity mapping at start)
+        for block in self.blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
     def forward(self, x0, labels):
         x = self.patch_embed(x0) 

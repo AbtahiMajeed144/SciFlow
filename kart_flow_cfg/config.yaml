@@ -8,9 +8,9 @@ model:
   patch_size: 4
   in_channels: 3
   # DiT-Small backbone (Perfect for CIFAR-10)
-  hidden_dim: 384
+  hidden_dim: 768 
   depth: 12
-  heads: 6
+  heads: 12
   # Upgraded KART parameters for High-Fidelity Edges
   kart_nodes: 128      # Increased (Q=64) to provide 64 local oscillators per patch
   kart_harmonics: 6   # Increased (K=6) to allow sharper, higher-frequency pixel boundaries

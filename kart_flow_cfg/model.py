@@ -43,7 +43,11 @@ class FourierKARTLayer(nn.Module):
         
         denominator = (self.w.view(self.Q, 1) * self.k_vec.view(1, self.K)) 
         denominator = denominator.view(1, 1, 1, self.Q, self.K)
-        denominator = torch.where(denominator.abs() < 1e-5, denominator.sign() * 1e-5, denominator)
+        
+        # Ensure sign is never exactly 0 to prevent division by zero
+        sign = denominator.sign()
+        sign = torch.where(sign == 0, torch.ones_like(sign), sign)
+        denominator = torch.where(denominator.abs() < 1e-5, sign * 1e-5, denominator)
         
         integral_elements = (-self.A / denominator) * (cos_1 - cos_0)
         h_1 = torch.sum(integral_elements, dim=(3, 4))
@@ -67,6 +71,10 @@ class DiTBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_dim, 6 * hidden_dim, bias=True)
         )
+        
+        # Zero-initialize adaLN modulation to act as an identity mapping at start
+        nn.init.zeros_(self.adaLN_modulation[1].weight)
+        nn.init.zeros_(self.adaLN_modulation[1].bias)
 
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
@@ -86,7 +94,7 @@ class TimeAgnosticTinyDiT(nn.Module):
         self.num_patches = (img_size // patch_size) ** 2
         
         self.patch_embed = nn.Conv2d(in_channels, hidden_dim, kernel_size=patch_size, stride=patch_size)
-        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches, hidden_dim))
+        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches, hidden_dim) * 0.02)
         
         self.class_emb = nn.Embedding(num_classes + 1, hidden_dim)
         

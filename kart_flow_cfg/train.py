@@ -16,7 +16,7 @@ from inference import generate_1step
 # ──────────────────────────────────────────────────────────────────────────────
 # Adaptive L2 Loss (from MeanFlow, adapted for KART Flow)
 # ──────────────────────────────────────────────────────────────────────────────
-def adaptive_l2_loss(error, gamma=0.5, c=1e-3):
+def adaptive_l2_loss(error, gamma=1.0, c=1e-3):
     """Adaptive L2 loss: sg(w) * ||Δ||² where w = 1 / (||Δ||² + c)^(1-γ).
     
     Downweights easy-to-predict smooth regions so that high-frequency
